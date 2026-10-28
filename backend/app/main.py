@@ -1,8 +1,11 @@
 from functools import lru_cache
 
+import numpy as np
 import pandas as pd
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+
+
 
 from app.logic import DELIVERY_END, DELIVERY_START, build_comparison, compute_metrics
 
@@ -66,9 +69,22 @@ def errors_by_hour(cutoff_hour: int = CutoffHour):
 
 
 @app.get("/api/v1/errors/distribution")
-def errors_distribution(cutoff_hour: int = CutoffHour, bins: int = Query(20, ge=5, le=60)):
+def errors_distribution(cutoff_hour: int = CutoffHour,
+                        bin_mw: int = Query(1000, ge=100, le=5000)):
+    """Histogram of hourly errors using fixed-width bins (default 1,000 MW)."""
+    e = comparison(cutoff_hour)["error_mw"]
+    lo = int(np.floor(e.min() / bin_mw)) * bin_mw
+    hi = int(np.ceil(e.max() / bin_mw)) * bin_mw
+    edges = np.arange(lo, hi + bin_mw, bin_mw)
+    counts, _ = np.histogram(e, bins=edges)
+    return [{"from_mw": int(edges[i]), "to_mw": int(edges[i + 1]), "count": int(c)}
+            for i, c in enumerate(counts)]
+
+
+@app.get("/api/v1/errors/daily")
+def errors_daily(cutoff_hour: int = CutoffHour):
+    """MAE and bias for each delivery day, to spot the worst days."""
     df = comparison(cutoff_hour)
-    cuts = pd.cut(df["error_mw"], bins=bins)
-    counts = cuts.value_counts().sort_index()
-    return [{"from_mw": round(i.left), "to_mw": round(i.right), "count": int(c)}
-            for i, c in counts.items()]
+    g = df.groupby(df["startTime"].dt.strftime("%Y-%m-%d"))["error_mw"]
+    return [{"date": d, "mae_mw": round(v.abs().mean(), 1), "bias_mw": round(v.mean(), 1)}
+            for d, v in g]
